@@ -6,6 +6,7 @@
 
 
 import sys
+import redis
 import socket
 import logging
 from functools import wraps
@@ -34,6 +35,7 @@ server = "http://" + zabbix_server + urlpath
 username = "username_with_zabbix_super_admin"
 zapi = ZabbixAPI(server = server, path="", log_level=0)
 zapi.login(username, zabbix_api_pass.password)
+r_server = redis.Redis("redis-server.intra")
 
 
 def reply_json(f):
@@ -46,6 +48,15 @@ def reply_json(f):
         return r
     return json_dumps
 
+def check_redis_cache(hostname, template):
+    if r_server.get(hostname+":"+template):
+        print "HIT: %s:%s already in cache" % (hostname, template)
+        return "ok"
+    else:
+        # keep in cache for 7 days
+        r_server.setex(hostname+":"+template, "ok", 604800)
+        print "MISS: put %s:%s in cache" % (hostname, template)
+        return "nok"
 
 def create_group(zabbix_group):
     """Function that will create host group on Zabbix Server."""
@@ -80,6 +91,15 @@ def add_group_template(host_name=None,zabbix_template=None,zabbix_group=None):
         logger.error("host_ip %s: nodename nor servname provided, or not known (is dns working?)", host_name)
         abort (500, "host_ip %s  nodename nor servname provided, or not known (is dns working?)" % host_name)
 
+    ret = check_redis_cache(host_name, zabbix_template)
+
+    # if its already in cache
+    if ret == "ok":
+        return {"template": zabbix_template,
+                "hostname": host_name,
+                "status": "HIT: already in cache!"
+                }
+                
     # get the provided group ID, if not found we create it
     groupid=zapi.hostgroup.get({"output": "shorten","filter": { "name": zabbix_group}})
     logger.info("Groupid: %s group name: %s", groupid, zabbix_group)
